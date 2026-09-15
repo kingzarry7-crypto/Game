@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Street Heat</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#151a21">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; background: #1a2530;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    height: 100%; width: 100%; touch-action: none;
+  }
+  #game { display: block; background: #6b7a63; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; padding: 14px 16px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    pointer-events: none; color: #fff;
+  }
+  #cash {
+    background: rgba(10,15,20,.55); backdrop-filter: blur(4px);
+    padding: 8px 14px; border-radius: 20px; font-size: 16px; font-weight: 800;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  #wanted {
+    background: rgba(10,15,20,.55); backdrop-filter: blur(4px);
+    padding: 8px 14px; border-radius: 20px; display: flex; gap: 3px;
+    border: 1px solid rgba(255,255,255,.15); font-size: 18px;
+  }
+  #missionBanner {
+    position: fixed; top: 46%; left: 50%; transform: translate(-50%,-50%);
+    background: rgba(10,15,20,.85); color: #fff; padding: 16px 24px; border-radius: 14px;
+    font-size: 16px; font-weight: 700; opacity: 0; transition: opacity .3s;
+    pointer-events: none; text-align: center; max-width: 82vw;
+    border: 1px solid rgba(255,210,63,.4);
+  }
+  #missionBanner.show { opacity: 1; }
+  #controls {
+    position: fixed; bottom: 0; left: 0; right: 0; padding: 20px;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    pointer-events: none;
+  }
+  #joystickZone {
+    width: 130px; height: 130px; border-radius: 50%;
+    background: rgba(255,255,255,.10); border: 2px solid rgba(255,255,255,.28);
+    position: relative; pointer-events: all;
+  }
+  #joystickThumb {
+    width: 55px; height: 55px; border-radius: 50%;
+    background: rgba(255,255,255,.6);
+    position: absolute; top: 37px; left: 37px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  #actionBtn {
+    width: 82px; height: 82px; border-radius: 50%;
+    background: linear-gradient(145deg,#ff6b5a,#e8402e); color: #fff; font-weight: 800; font-size: 13px;
+    border: 2px solid rgba(255,255,255,.5); pointer-events: all;
+    box-shadow: 0 4px 14px rgba(0,0,0,.4);
+  }
+  #startScreen {
+    position: fixed; inset: 0; background: linear-gradient(160deg,#0d1520,#1a2a38);
+    color: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; z-index: 10;
+  }
+  #startScreen h1 { font-size: 34px; margin-bottom: 4px; letter-spacing: 1px; }
+  #startScreen p { opacity: .7; max-width: 320px; line-height: 1.5; font-size: 14px; }
+  #startScreen button {
+    margin-top: 22px; padding: 15px 36px; font-size: 16px; font-weight: 800;
+    background: linear-gradient(145deg,#ff6b5a,#e8402e); color: #fff; border: none; border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.4);
+  }
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>🚗 STREET HEAT</h1>
+  <p>Drag anywhere to walk. Get near a car and tap ENTER to drive. Deliver jobs before your wanted stars fill up.</p>
+  <button id="startBtn">START GAME</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="cash">💵 $0</div>
+  <div id="wanted"></div>
+</div>
+<div id="missionBanner"></div>
+
+<div id="controls">
+  <div id="joystickZone"><div id="joystickThumb"></div></div>
+  <button id="actionBtn">ENTER</button>
+</div>
+
+<script>
+// ---------- SETUP ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+resize(); addEventListener('resize', resize);
+
+const WORLD = { w: 3200, h: 3200 };
+const camera = { x: 0, y: 0 };
+const blockSize = 320;
+const roadWidth = 54;
+
+let cash = 0, wanted = 0;
+let state = 'menu';
+
+// ---------- WORLD: buildings, trees, windows ----------
+const buildings = [];
+const palette = ['#7d6a54','#8a6f5c','#6d7b6a','#7a6d7d','#5f6b78','#8c7960'];
+for (let x = 0; x < WORLD.w; x += blockSize) {
+  for (let y = 0; y < WORLD.h; y += blockSize) {
+    if (Math.random() < 0.8) {
+      const bw = blockSize - roadWidth*2 - 40 - Math.random()*30;
+      const bh = blockSize - roadWidth*2 - 40 - Math.random()*30;
+      const bx = x + roadWidth + 20 + Math.random()*10;
+      const by = y + roadWidth + 20 + Math.random()*10;
+      const floors = Math.max(2, Math.floor(bh/26));
+      const cols = Math.max(2, Math.floor(bw/22));
+      const windows = [];
+      for (let r=0; r<floors; r++) for (let c=0; c<cols; c++) {
+        windows.push({ lit: Math.random() < 0.35 });
+      }
+      buildings.push({
+        x: bx, y: by, w: bw, h: bh,
+        color: palette[Math.floor(Math.random()*palette.length)],
+        roofColor: '#3a3f45',
+        floors, cols, windows
+      });
+    } else if (Math.random() < 0.5) {
+      // empty lot -> a couple trees
+      for (let i=0;i<3;i++){
+        buildings.push({ tree:true, x: x + 60 + Math.random()*(blockSize-120), y: y + 60 + Math.random()*(blockSize-120) });
+      }
+    }
+  }
+}
+
+// ---------- ENTITIES ----------
+const player = {
+  x: WORLD.w/2, y: WORLD.h/2, angle: -Math.PI/2, speed: 0,
+  maxSpeed: 2.6, inCar: null, walkPhase: 0
+};
+
+const carColors = ['#c0392b','#2980b9','#f1c40f','#27ae60','#8e44ad','#e67e22'];
+const cars = [];
+for (let i = 0; i < 16; i++) {
+  cars.push({
+    x: Math.random()*WORLD.w, y: Math.random()*WORLD.h,
+    angle: Math.random()*Math.PI*2, speed: 0, maxSpeed: 6.6,
+    w: 40, h: 20, color: carColors[i%carColors.length],
+    occupied: false
+  });
+}
+
+const cops = [];
+function spawnCop() {
+  cops.push({
+    x: player.x + (Math.random()-0.5)*700, y: player.y + (Math.random()-0.5)*700,
+    angle: 0, speed: 0, maxSpeed: 6.2, w: 40, h: 20
+  });
+}
+for (let i=0;i<3;i++) spawnCop();
+
+let mission = null;
+function newMission() {
+  const dropX = Math.random()*WORLD.w, dropY = Math.random()*WORLD.h;
+  mission = { x: dropX, y: dropY, reward: 100 + Math.floor(Math.random()*150) };
+  showBanner(`New job: deliver to the marked pin. Reward $${mission.reward}`);
+}
+function showBanner(text, ms=2600) {
+  const el = document.getElementById('missionBanner');
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(showBanner._t);
+  showBanner._t = setTimeout(()=>el.classList.remove('show'), ms);
+}
+
+// ---------- CONTROLS ----------
+const joyZone = document.getElementById('joystickZone');
+const joyThumb = document.getElementById('joystickThumb');
+let joy = { active: false, dx: 0, dy: 0 };
+
+function joyStart(e){ joy.active = true; moveJoy(e); }
+function moveJoy(e){
+  if (!joy.active) return;
+  const t = e.touches ? e.touches[0] : e;
+  const rect = joyZone.getBoundingClientRect();
+  let dx = t.clientX - (rect.left + rect.width/2);
+  let dy = t.clientY - (rect.top + rect.height/2);
+  const dist = Math.min(Math.hypot(dx,dy), 45);
+  const ang = Math.atan2(dy,dx);
+  dx = Math.cos(ang)*dist; dy = Math.sin(ang)*dist;
+  joyThumb.style.left = (37+dx)+'px'; joyThumb.style.top = (37+dy)+'px';
+  joy.dx = dx/45; joy.dy = dy/45;
+}
+function joyEnd(){ joy.active=false; joy.dx=0; joy.dy=0; joyThumb.style.left='37px'; joyThumb.style.top='37px'; }
+joyZone.addEventListener('touchstart', joyStart);
+joyZone.addEventListener('touchmove', moveJoy);
+joyZone.addEventListener('touchend', joyEnd);
+joyZone.addEventListener('mousedown', joyStart);
+addEventListener('mousemove', moveJoy);
+addEventListener('mouseup', joyEnd);
+
+document.getElementById('actionBtn').addEventListener('click', toggleCar);
+function toggleCar(){
+  if (player.inCar) {
+    player.inCar.occupied = false;
+    const c = player.inCar;
+    player.x = c.x - Math.cos(c.angle)*40;
+    player.y = c.y - Math.sin(c.angle)*40;
+    player.inCar = null;
+    document.getElementById('actionBtn').textContent = 'ENTER';
+  } else {
+    let nearest = null, nd = 70;
+    for (const c of cars) {
+      if (c.occupied) continue;
+      const d = Math.hypot(c.x-player.x, c.y-player.y);
+      if (d < nd) { nd = d; nearest = c; }
+    }
+    if (nearest) {
+      nearest.occupied = true; player.inCar = nearest;
+      document.getElementById('actionBtn').textContent = 'EXIT';
+    }
+  }
+}
+
+// ---------- GAME LOOP ----------
+function update() {
+  const obj = player.inCar || player;
+  const maxSpd = player.inCar ? player.inCar.maxSpeed : player.maxSpeed;
+  const inputMag = Math.hypot(joy.dx, joy.dy);
+
+  if (inputMag > 0.15) {
+    obj.angle = Math.atan2(joy.dy, joy.dx);
+    obj.speed = Math.min(maxSpd, (obj.speed||0) + (player.inCar?0.45:0.3));
+    if (!player.inCar) player.walkPhase += obj.speed * 0.35;
+  } else {
+    obj.speed = Math.max(0, (obj.speed||0) - (player.inCar?0.35:0.25));
+  }
+  obj.x += Math.cos(obj.angle) * obj.speed;
+  obj.y += Math.sin(obj.angle) * obj.speed;
+  obj.x = Math.max(20, Math.min(WORLD.w-20, obj.x));
+  obj.y = Math.max(20, Math.min(WORLD.h-20, obj.y));
+
+  if (player.inCar) { player.x = player.inCar.x; player.y = player.inCar.y; }
+
+  if (mission) {
+    const d = Math.hypot(player.x-mission.x, player.y-mission.y);
+    if (d < 55) {
+      cash += mission.reward;
+      showBanner(`Delivered! +$${mission.reward}`);
+      mission = null;
+      setTimeout(newMission, 1800);
+    }
+  }
+
+  cops.forEach(cop => {
+    const d = Math.hypot(cop.x-player.x, cop.y-player.y);
+    if (wanted > 0 && d < 950) {
+      cop.angle = Math.atan2(player.y-cop.y, player.x-cop.x);
+      cop.speed = Math.min(cop.maxSpeed, (cop.speed||0)+0.35);
+    } else {
+      cop.speed = Math.max(0, (cop.speed||0)-0.2);
+    }
+    cop.x += Math.cos(cop.angle)*cop.speed;
+    cop.y += Math.sin(cop.angle)*cop.speed;
+    if (d < 38 && wanted > 0) {
+      wanted = Math.max(0, wanted-1);
+      cash = Math.max(0, cash - 40);
+      showBanner('Busted! -$40', 1500);
+      cop.x += (Math.random()-0.5)*300; cop.y += (Math.random()-0.5)*300;
+    }
+  });
+
+  camera.x = player.x - canvas.width/2;
+  camera.y = player.y - canvas.height/2;
+
+  document.getElementById('cash').textContent = `💵 $${cash}`;
+  document.getElementById('wanted').innerHTML = '⭐'.repeat(wanted) + '<span style="opacity:.3">'+'⭐'.repeat(5-wanted)+'</span>';
+}
+
+// ---------- DRAWING HELPERS ----------
+function drawCar(c, ctx, isPlayerCar, isCop) {
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate(c.angle);
+
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,.25)';
+  ctx.beginPath(); ctx.ellipse(2, 3, c.w/2+2, c.h/2+1, 0, 0, 7); ctx.fill();
+
+  const bodyColor = isCop ? '#1e2a44' : (isPlayerCar !== undefined ? c.color : c.color);
+  // main body
+  ctx.fillStyle = bodyColor;
+  roundRect(ctx, -c.w/2, -c.h/2, c.w, c.h, 6); ctx.fill();
+
+  // windshield/roof
+  ctx.fillStyle = isCop ? '#0d1420' : 'rgba(30,40,50,.85)';
+  roundRect(ctx, -c.w/2+c.w*0.28, -c.h/2+3, c.w*0.42, c.h-6, 3); ctx.fill();
+
+  // cop white doors panel
+  if (isCop) {
+    ctx.fillStyle = '#e8ecef';
+    ctx.fillRect(-c.w/2+2, -c.h/2+2, c.w*0.22, c.h-4);
+    ctx.fillRect(c.w/2-c.w*0.22-2, -c.h/2+2, c.w*0.22, c.h-4);
+    // light bar
+    const flash = Math.floor(Date.now()/180)%2===0;
+    ctx.fillStyle = flash ? '#ff3b3b' : '#3b6bff';
+    ctx.fillRect(-6, -c.h/2-5, 12, 5);
+  }
+
+  // headlights
+  ctx.fillStyle = '#ffe9a8';
+  ctx.fillRect(c.w/2-4, -c.h/2+2, 3, 4);
+  ctx.fillRect(c.w/2-4, c.h/2-6, 3, 4);
+  // taillights
+  ctx.fillStyle = '#ff4d4d';
+  ctx.fillRect(-c.w/2+1, -c.h/2+2, 3, 4);
+  ctx.fillRect(-c.w/2+1, c.h/2-6, 3, 4);
+
+  // wheels
+  ctx.fillStyle = '#161616';
+  ctx.fillRect(-c.w/2+6, -c.h/2-2, 8, 4);
+  ctx.fillRect(-c.w/2+6, c.h/2-2, 8, 4);
+  ctx.fillRect(c.w/2-14, -c.h/2-2, 8, 4);
+  ctx.fillRect(c.w/2-14, c.h/2-2, 8, 4);
+
+  ctx.restore();
+}
+
+function drawPerson(p, ctx) {
+  const moving = p.speed > 0.2;
+  const swing = moving ? Math.sin(p.walkPhase) * 0.6 : 0;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  ctx.beginPath(); ctx.ellipse(0, 12, 9, 4, 0, 0, 7); ctx.fill();
+
+  ctx.rotate(p.angle + Math.PI/2);
+
+  // legs
+  ctx.strokeStyle = '#2b3550'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-3, 2); ctx.lineTo(-3 + swing*5, 13); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(3, 2); ctx.lineTo(3 - swing*5, 13); ctx.stroke();
+
+  // torso
+  ctx.fillStyle = '#3a7bd5';
+  roundRect(ctx, -6, -8, 12, 14, 4); ctx.fill();
+
+  // arms
+  ctx.strokeStyle = '#3a7bd5'; ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.moveTo(-6, -5); ctx.lineTo(-6 - swing*4, 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(6, -5); ctx.lineTo(6 + swing*4, 5); ctx.stroke();
+
+  // head
+  ctx.fillStyle = '#f0c39a';
+  ctx.beginPath(); ctx.arc(0, -12, 5.5, 0, 7); ctx.fill();
+  // hair
+  ctx.fillStyle = '#2b2320';
+  ctx.beginPath(); ctx.arc(0, -14, 5.5, Math.PI, 0); ctx.fill();
+
+  ctx.restore();
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.fillStyle = '#6b7a63';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+
+  // roads with sidewalks + lane markings
+  ctx.fillStyle = '#4a4f55';
+  for (let x=0; x<WORLD.w; x+=blockSize){ ctx.fillRect(x-roadWidth/2,0,roadWidth,WORLD.h); }
+  for (let y=0; y<WORLD.h; y+=blockSize){ ctx.fillRect(0,y-roadWidth/2,WORLD.w,roadWidth); }
+  // sidewalks (edges of roads)
+  ctx.strokeStyle = '#8b9096'; ctx.lineWidth = 3;
+  for (let x=0; x<WORLD.w; x+=blockSize){
+    ctx.strokeRect(x-roadWidth/2-3, 0, roadWidth+6, WORLD.h);
+  }
+  // dashed center lines
+  ctx.strokeStyle = '#e8d24a'; ctx.lineWidth = 2; ctx.setLineDash([14,14]);
+  for (let x=0; x<WORLD.w; x+=blockSize){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,WORLD.h); ctx.stroke(); }
+  for (let y=0; y<WORLD.h; y+=blockSize){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(WORLD.w,y); ctx.stroke(); }
+  ctx.setLineDash([]);
+
+  // buildings + trees
+  buildings.forEach(b => {
+    if (b.tree) {
+      ctx.fillStyle = '#6b4a2f'; ctx.fillRect(b.x-2, b.y, 4, 10);
+      ctx.fillStyle = '#3f7d3f'; ctx.beginPath(); ctx.arc(b.x, b.y-4, 10, 0, 7); ctx.fill();
+      return;
+    }
+    // building shadow
+    ctx.fillStyle = 'rgba(0,0,0,.15)';
+    ctx.fillRect(b.x+4, b.y+4, b.w, b.h);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    // roof strip
+    ctx.fillStyle = b.roofColor;
+    ctx.fillRect(b.x, b.y, b.w, 6);
+    // windows grid
+    const wW = b.w / b.cols, wH = b.h / b.floors;
+    let idx = 0;
+    for (let r=0; r<b.floors; r++) {
+      for (let c=0; c<b.cols; c++) {
+        const win = b.windows[idx++];
+        ctx.fillStyle = win.lit ? '#ffe9a0' : 'rgba(20,25,35,.55)';
+        ctx.fillRect(b.x + c*wW + wW*0.2, b.y + r*wH + wH*0.25, wW*0.6, wH*0.5);
+      }
+    }
+  });
+
+  // mission marker (pin + pulse)
+  if (mission) {
+    const pulse = 26 + Math.sin(Date.now()/200)*5;
+    ctx.strokeStyle = 'rgba(255,210,63,.9)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(mission.x, mission.y, pulse, 0, 7); ctx.stroke();
+    // pin
+    ctx.save();
+    ctx.translate(mission.x, mission.y - 30);
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath();
+    ctx.arc(0,0,9,Math.PI,0);
+    ctx.lineTo(6,18); ctx.lineTo(-6,18); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#7a5a00';
+    ctx.beginPath(); ctx.arc(0,-1,3.5,0,7); ctx.fill();
+    ctx.restore();
+  }
+
+  // cars (not player's)
+  cars.forEach(c => { if (c !== player.inCar) drawCar(c, ctx, undefined, false); });
+
+  // cop cars
+  cops.forEach(cop => drawCar(cop, ctx, undefined, true));
+
+  // player's car or walking person
+  if (player.inCar) {
+    drawCar(player.inCar, ctx, true, false);
+  } else {
+    drawPerson(player, ctx);
+  }
+
+  ctx.restore();
+}
+
+function loop(){ if(state==='playing'){ update(); draw(); } requestAnimationFrame(loop); }
+
+setInterval(()=>{
+  if (state!=='playing') return;
+  if (player.inCar && player.inCar.speed > 5 && Math.random()<0.15) wanted = Math.min(5, wanted+1);
+}, 2000);
+
+document.getElementById('startBtn').addEventListener('click', () => {
+  document.getElementById('startScreen').style.display = 'none';
+  state = 'playing';
+  newMission();
+  loop();
+});
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
